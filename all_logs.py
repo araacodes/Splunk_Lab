@@ -7,10 +7,10 @@ from datetime import datetime
 # SPLUNK HEC CONFIG
 # =========================
 
-HEC_URL = "YOUR_URL"
-HEC_TOKEN = "YOUR_TOKEN"
+HEC_URL = "YOUR_HEC_URL"
+HEC_TOKEN = "YOUR_HEC_TOKEN"
 
-headers = {
+HEADERS = {
     "Authorization": f"Splunk {HEC_TOKEN}",
     "Content-Type": "application/json"
 }
@@ -46,41 +46,57 @@ fraud_event_map = {
 }
 
 # =========================
-# SEND TO SPLUNK
+# RAW EVENT TEMPLATES
 # =========================
+
+raw_event_templates = {
+    "payments_json":
+        "{readable_time} {event} "
+        "payment_id={payment_id} "
+        "amount={amount} "
+        "status={status}",
+
+    "auth_json":
+        "{readable_time} {event} "
+        "user_id={user_id} "
+        "status={status}",
+
+    "fraud_json":
+        "{readable_time} {event} "
+        "payment_id={payment_id} "
+        "risk_score={risk_score} "
+        "is_fraud={is_fraud}",
+}
+
+# =========================
+# FRAUD RULES
+# =========================
+
+fraud_rules = [
+    (90, "FRAUD_DETECTED"),
+    (70, "HIGH_RISK"),
+    (40, "MEDIUM_RISK"),
+    (0, "LOW_RISK"),
+]
+
+# =========================
+# HELPERS
+# =========================
+
+def get_fraud_status(risk_score):
+
+    for threshold, status in fraud_rules:
+
+        if risk_score >= threshold:
+            return status
+
 
 def send_to_splunk(event, sourcetype):
 
-    timestamp = datetime.now().strftime("%I:%M:%S%p")
-
-    if sourcetype == "payments_json":
-
-        raw_event = (
-            f"{timestamp} "
-            f"{event['event']} "
-            f"payment_id={event['payment_id']} "
-            f"amount={event['amount']} "
-            f"status={event['status']}"
-        )
-
-    elif sourcetype == "auth_json":
-
-        raw_event = (
-            f"{timestamp} "
-            f"{event['event']} "
-            f"user_id={event['user_id']} "
-            f"status={event['status']}"
-        )
-
-    elif sourcetype == "fraud_json":
-
-        raw_event = (
-            f"{timestamp} "
-            f"{event['event']} "
-            f"payment_id={event['payment_id']} "
-            f"risk_score={event['risk_score']} "
-            f"is_fraud={event['is_fraud']}"
-        )
+    raw_event = raw_event_templates[sourcetype].format(
+        readable_time=datetime.now().strftime("%I:%M:%S%p"),
+        **event
+    )
 
     payload = {
         "event": raw_event,
@@ -91,13 +107,12 @@ def send_to_splunk(event, sourcetype):
 
     response = requests.post(
         HEC_URL,
-        headers=headers,
+        headers=HEADERS,
         json=payload,
         verify=False
     )
 
-    print(response.status_code)
-    print(response.text)
+    print(response.status_code, response.text)
 
 # =========================
 # MAIN LOOP
@@ -105,26 +120,14 @@ def send_to_splunk(event, sourcetype):
 
 while True:
 
-    payment_status = random.choices(
-        [
-            "SUCCESS",
-            "FAILED",
-            "PENDING",
-            "DECLINED",
-            "REFUNDED",
-            "CANCELLED",
-            "TIMEOUT",
-            "FRAUD_SUSPECTED",
-            "CHARGEBACK",
-        ],
-        weights=[60, 10, 8, 7, 5, 4, 3, 2, 1],
-        k=1,
-    )[0]
+    # =========================
+    # PAYMENT EVENT
+    # =========================
 
-    auth_status = random.choices(
-        ["SUCCESS", "FAILED", "LOCKED_OUT", "PASSWORD_EXPIRED"],
-        weights=[70, 20, 5, 5],
-        k=1,
+    payment_status = random.choices(
+        list(payment_event_map.keys()),
+        weights=[60, 10, 8, 7, 5, 4, 3, 2, 1],
+        k=1
     )[0]
 
     payments = {
@@ -136,6 +139,16 @@ while True:
         "status": payment_status,
     }
 
+    # =========================
+    # AUTH EVENT
+    # =========================
+
+    auth_status = random.choices(
+        list(auth_event_map.keys()),
+        weights=[70, 20, 5, 5],
+        k=1
+    )[0]
+
     auth = {
         "timestamp": datetime.now().isoformat(),
         "service": "auth-service",
@@ -144,16 +157,13 @@ while True:
         "status": auth_status,
     }
 
+    # =========================
+    # FRAUD EVENT
+    # =========================
+
     risk_score = random.randint(1, 100)
 
-    if risk_score >= 90:
-        fraud_status = "FRAUD_DETECTED"
-    elif risk_score >= 70:
-        fraud_status = "HIGH_RISK"
-    elif risk_score >= 40:
-        fraud_status = "MEDIUM_RISK"
-    else:
-        fraud_status = "LOW_RISK"
+    fraud_status = get_fraud_status(risk_score)
 
     fraud = {
         "timestamp": datetime.now().isoformat(),
@@ -165,7 +175,10 @@ while True:
         "is_fraud": fraud_status == "FRAUD_DETECTED",
     }
 
-    # Send events to Splunk
+    # =========================
+    # SEND EVENTS TO SPLUNK
+    # =========================
+
     send_to_splunk(payments, "payments_json")
     send_to_splunk(auth, "auth_json")
     send_to_splunk(fraud, "fraud_json")
